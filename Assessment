@@ -1,0 +1,297 @@
+Backend (Node.js + Express)
+Directory Structure
+backend
+├── config
+│   └── db.js
+├── controllers
+│   └── userController.js
+│   └── expenseController.js
+├── models
+│   └── User.js
+│   └── Expense.js
+├── routes
+│   └── userRoutes.js
+│   └── expenseRoutes.js
+├── middleware
+│   └── authMiddleware.js
+├── .env
+├── server.js
+└── package.json
+Step 1: Initialize Node.js Project
+mkdir backend
+cd backend
+npm init -y
+npm install express mongoose bcryptjs jsonwebtoken dotenv
+Step 2: Create Configuration File for MongoDB (config/db.js)
+const mongoose = require('mongoose');
+
+const connectDB = async () => {
+  try {
+    await mongoose.connect(process.env.MONGO_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+    console.log('MongoDB connected');
+  } catch (error) {
+    console.error('MongoDB connection failed', error);
+    process.exit(1);
+  }
+};
+
+module.exports = connectDB;
+Step 3: Create User Model (models/User.js)
+const mongoose = require('mongoose');
+
+const userSchema = new mongoose.Schema({
+  username: {
+    type: String,
+    required: true,
+    unique: true,
+  },
+  email: {
+    type: String,
+    required: true,
+    unique: true,
+  },
+  password: {
+    type: String,
+    required: true,
+  },
+}, { timestamps: true });
+
+module.exports = mongoose.model('User', userSchema);
+Step 4: Create Expense Model (models/Expense.js)
+const mongoose = require('mongoose');
+
+const expenseSchema = new mongoose.Schema({
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+  },
+  date: {
+    type: Date,
+    required: true,
+  },
+  amount: {
+    type: Number,
+    required: true,
+  },
+  category: {
+    type: String,
+    required: true,
+  },
+  description: {
+    type: String,
+  },
+}, { timestamps: true });
+
+module.exports = mongoose.model('Expense', expenseSchema);
+Step 5: Create User Controller (controllers/userController.js)
+const User = require('../models/User');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+
+const registerUser = async (req, res) => {
+  const { username, email, password } = req.body;
+
+  try {
+    const userExists = await User.findOne({ email });
+    if (userExists) {
+      return res.status(400).json({ message: 'User already exists' });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    const user = await User.create({
+      username,
+      email,
+      password: hashedPassword,
+    });
+
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+    res.status(201).json({ token });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+const loginUser = async (req, res) => {
+  const { email, password } = req.body;
+
+  try {
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(400).json({ message: 'Invalid credentials' });
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ message: 'Invalid credentials' });
+    }
+
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+    res.json({ token });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+module.exports = { registerUser, loginUser };
+Step 6: Create Expense Controller (controllers/expenseController.js)
+const Expense = require('../models/Expense');
+
+const addExpense = async (req, res) => {
+  const { date, amount, category, description } = req.body;
+
+  try {
+    const expense = await Expense.create({
+      user: req.user.id,
+      date,
+      amount,
+      category,
+      description,
+    });
+
+    res.status(201).json(expense);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+const getExpenses = async (req, res) => {
+  try {
+    const expenses = await Expense.find({ user: req.user.id });
+    res.json(expenses);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+const updateExpense = async (req, res) => {
+  const { id } = req.params;
+  const { date, amount, category, description } = req.body;
+
+  try {
+    const expense = await Expense.findById(id);
+    if (!expense) {
+      return res.status(404).json({ message: 'Expense not found' });
+    }
+
+    if (expense.user.toString() !== req.user.id) {
+      return res.status(401).json({ message: 'Not authorized' });
+    }
+
+    expense.date = date;
+    expense.amount = amount;
+    expense.category = category;
+    expense.description = description;
+
+    await expense.save();
+
+    res.json(expense);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+const deleteExpense = async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const expense = await Expense.findById(id);
+    if (!expense) {
+      return res.status(404).json({ message: 'Expense not found' });
+    }
+
+    if (expense.user.toString() !== req.user.id) {
+      return res.status(401).json({ message: 'Not authorized' });
+    }
+
+    await expense.remove();
+
+    res.json({ message: 'Expense removed' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+module.exports = { addExpense, getExpenses, updateExpense, deleteExpense };
+Step 7: Create Authentication Middleware (middleware/authMiddleware.js)
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+
+const protect = async (req, res, next) => {
+  let token;
+
+  if (
+    req.headers.authorization &&
+    req.headers.authorization.startsWith('Bearer')
+  ) {
+    try {
+      token = req.headers.authorization.split(' ')[1];
+
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+      req.user = await User.findById(decoded.id).select('-password');
+
+      next();
+    } catch (error) {
+      res.status(401).json({ message: 'Not authorized, token failed' });
+    }
+  }
+
+  if (!token) {
+    res.status(401).json({ message: 'Not authorized, no token' });
+  }
+};
+
+module.exports = { protect };
+Step 8: Create Routes (routes/userRoutes.js and routes/expenseRoutes.js)
+const express = require('express');
+const { registerUser, loginUser } = require('../controllers/userController');
+const router = express.Router();
+
+router.post('/register', registerUser);
+router.post('/login', loginUser);
+
+module.exports = router;
+Step 9: Create Server Entry Point (server.js)
+const express = require('express');
+const dotenv = require('dotenv');
+const connectDB = require('./config/db');
+const userRoutes = require('./routes/userRoutes');
+const expenseRoutes = require('./routes/expenseRoutes');
+
+dotenv.config();
+connectDB();
+
+const app = express();
+
+app.use(express.json());
+
+app.use('/api/users', userRoutes);
+app.use('/api/expenses', expenseRoutes);
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+Step 10: Create Environment Configuration (.env)
+MONGO_URI=your_mongodb_connection_string
+JWT_SECRET=your_jwt_secret_key
+Frontend (React)
+Directory Structure
+frontend
+├── public
+│   └── index.html
+├── src
+│   ├── components
+│   ├── pages
+│   ├── App.js
+│   ├── index.js
+│   ├── store.js
+│   └── reducers
+│       └── userReducer.js
+│       └── expenseReducer.js
